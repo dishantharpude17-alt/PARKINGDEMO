@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <circle cx="50" cy="50" r="50" fill="#00214d"/>
+  <path
+    d="M 9.6 42.9 A 41 41 0 0 1 42.9 9.6"
+    stroke="#14b8a6"
+    stroke-width="6.8"
+    stroke-linecap="round"
+  />
+  <path
+    d="M 42.9 90.4 A 41 41 0 0 1 9.6 57.1"
+    stroke="#14b8a6"
+    stroke-width="6.8"
+    stroke-linecap="round"
+  />
+  <path
+    d="M 57.1 9.6 A 41 41 0 0 1 90.4 42.9"
+    stroke="#20b2aa"
+    stroke-width="6.8"
+    stroke-linecap="round"
+  />
+  <path
+    d="M 90.4 57.1 A 41 41 0 0 1 57.1 90.4"
+    stroke="#20b2aa"
+    stroke-width="6.8"
+    stroke-linecap="round"
+  />
+  <path
+    fill="#ffffff"
+    d="M22 48.5c0-1 .8-1.8 1.8-1.8h2.2v-1.2c0-7.5 6.2-14.5 14.5-14.5h19.4c8.3 0 14.5 7 14.5 14.5v1.2h2.2c1 0 1.8.8 1.8 1.8V58c0 1-.8 1.8-1.8 1.8h-1.6c-.3 3.6-3.3 6.4-7 6.4s-6.7-2.8-7-6.4H38.6c-.3 3.6-3.3 6.4-7 6.4s-6.7-2.8-7-6.4h-1.6c-1 0-1.8-.8-1.8-1.8V48.5ZM28 46.7h44l-1.2-3.2c-1.5-4.2-5.5-7-10-7H39.2c-4.5 0-8.5 2.8-10 7l-1.2 3.2Z"
+  />
+  <path
+    fill="#00214d"
+    d="M38.2 54.8 41.8 48l3.2 1.2-2.8 7.2c-.9 2.3-3.9 2.8-5.5.8l-.5-.4Z"
+  />
+  <path
+    fill="#00214d"
+    d="M61.8 54.8 58.2 48l-3.2 1.2 2.8 7.2c.9 2.3 3.9 2.8 5.5.8l.5-.4Z"
+  />
+</svg>
