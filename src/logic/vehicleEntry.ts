@@ -1,3 +1,9 @@
+import {
+  applySlotStatusesFromSessions,
+  canAssignVehicleToSlot,
+  findSlotForVehicleEntry,
+  getSessionsForSlot,
+} from './slotAllocation.ts'
 import type { ParkingSlot } from '../types/parkingSlot.ts'
 import type {
   CompletedParkingTransaction,
@@ -92,11 +98,42 @@ export function attemptVehicleEntry(
     }
   }
 
-  const slot = state.slots.find((item) => item.status === 'available')
-  if (!slot) {
-    return {
-      ok: false,
-      error: 'Parking lot is full. No available slots.',
+  let slot: ParkingSlot | null = null
+
+  if (input.preferredSlotId) {
+    const preferred = state.slots.find((item) => item.id === input.preferredSlotId)
+    if (!preferred) {
+      return {
+        ok: false,
+        error: 'Selected bay is no longer on the lot plan. Choose another bay or use automatic assignment.',
+      }
+    }
+    const preferredSessions = getSessionsForSlot(state, preferred.id)
+    if (
+      !canAssignVehicleToSlot(
+        preferred,
+        preferredSessions,
+        input.vehicleType,
+      )
+    ) {
+      return {
+        ok: false,
+        error:
+          'Selected bay is no longer available for this vehicle. Pick another bay or register without a manual selection.',
+      }
+    }
+    slot = preferred
+  } else {
+    slot = findSlotForVehicleEntry(state, input.vehicleType)
+    if (!slot) {
+      const typeLabel =
+        input.vehicleType === 'motorcycle'
+          ? 'No two-wheeler or overflow bay capacity is available.'
+          : 'No eligible four-wheeler bay is available.'
+      return {
+        ok: false,
+        error: `Parking lot is full. ${typeLabel}`,
+      }
     }
   }
 
@@ -108,17 +145,15 @@ export function attemptVehicleEntry(
     entryTimestamp: new Date().toISOString(),
   }
 
-  const slots = state.slots.map((item) =>
-    item.id === slot.id ? { ...item, status: 'occupied' as const } : item,
-  )
+  const nextState = applySlotStatusesFromSessions({
+    slots: state.slots,
+    sessions: [...state.sessions, session],
+    completed: state.completed,
+  })
 
   return {
     ok: true,
-    state: {
-      slots,
-      sessions: [...state.sessions, session],
-      completed: state.completed,
-    },
+    state: nextState,
     session,
     slotLabel: slot.label,
   }

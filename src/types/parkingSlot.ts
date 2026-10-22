@@ -1,9 +1,13 @@
 export type SlotStatus = 'available' | 'occupied'
 
+/** Dedicated two-wheeler slots vs four-wheeler bays (may hold up to two motorcycles). */
+export type SlotBayType = 'two_wheeler' | 'four_wheeler'
+
 export type ParkingSlot = {
   id: string
   label: string
   status: SlotStatus
+  bayType: SlotBayType
 }
 
 export type SlotFilter = 'all' | SlotStatus

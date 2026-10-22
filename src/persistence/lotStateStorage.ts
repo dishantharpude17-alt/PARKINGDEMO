@@ -1,6 +1,17 @@
-import { createDemoParkingSlots } from '../data/demoParkingSlots.ts'
+import {
+  bayTypeForDemoLabel,
+  createDemoParkingSlots,
+  demoSlotIdForLabel,
+  DEMO_PARKING_SLOT_COUNT,
+  formatFourWheelerBayLabel,
+  formatTwoWheelerBayLabel,
+} from '../data/demoParkingSlots.ts'
+import {
+  applySlotStatusesFromSessions,
+  validateLotSessionSlotRules,
+} from '../logic/slotAllocation.ts'
 import type { ParkingLotState } from '../logic/vehicleEntry.ts'
-import type { ParkingSlot, SlotStatus } from '../types/parkingSlot.ts'
+import type { ParkingSlot, SlotBayType, SlotStatus } from '../types/parkingSlot.ts'
 import type {
   CompletedParkingTransaction,
   ParkingSession,
@@ -37,6 +48,10 @@ function isSlotStatus(value: unknown): value is SlotStatus {
   return value === 'available' || value === 'occupied'
 }
 
+function isSlotBayType(value: unknown): value is SlotBayType {
+  return value === 'two_wheeler' || value === 'four_wheeler'
+}
+
 function parseSlot(value: unknown): ParkingSlot | null {
   if (!isRecord(value)) {
     return null
@@ -48,10 +63,14 @@ function parseSlot(value: unknown): ParkingSlot | null {
   ) {
     return null
   }
+  const bayType = isSlotBayType(value.bayType)
+    ? value.bayType
+    : bayTypeForDemoLabel(value.label)
   return {
     id: value.id,
     label: value.label,
     status: value.status,
+    bayType,
   }
 }
 
@@ -147,8 +166,110 @@ function parseCompleted(value: unknown): CompletedParkingTransaction | null {
   ) {
     txn.discountDescription = value.discountDescription
   }
+  if (isNonEmptyString(value.receiptNumber)) {
+    txn.receiptNumber = value.receiptNumber
+  }
+  if (isNonEmptyString(value.paymentTimestamp)) {
+    if (!Number.isNaN(new Date(value.paymentTimestamp).getTime())) {
+      txn.paymentTimestamp = value.paymentTimestamp
+    }
+  }
 
   return txn
+}
+
+function needsDemoSlotSchemaUpgrade(slots: readonly ParkingSlot[]): boolean {
+  if (slots.length !== DEMO_PARKING_SLOT_COUNT) {
+    return true
+  }
+  const canonicalIds = new Set(
+    createDemoParkingSlots().map((slot) => slot.id),
+  )
+  return slots.some((slot) => !canonicalIds.has(slot.id))
+}
+
+/** Maps legacy demo slot ids (A1, slot-c3, …) onto the Floor 1 A01/B01 scheme. */
+function buildLegacySlotIdRemap(): Map<string, string> {
+  const map = new Map<string, string>()
+
+  for (let index = 1; index <= 60; index += 1) {
+    const canonicalId = demoSlotIdForLabel(formatTwoWheelerBayLabel(index))
+    map.set(`slot-a${index}`, canonicalId)
+    map.set(canonicalId, canonicalId)
+  }
+
+  for (let index = 1; index <= 40; index += 1) {
+    const canonicalId = demoSlotIdForLabel(formatFourWheelerBayLabel(index))
+    map.set(`slot-b${index}`, canonicalId)
+    map.set(canonicalId, canonicalId)
+  }
+
+  let fourWheelerIndex = 1
+  for (const row of ['b', 'c', 'd'] as const) {
+    for (let column = 1; column <= 4; column += 1) {
+      if (fourWheelerIndex <= 40) {
+        map.set(
+          `slot-${row}${column}`,
+          demoSlotIdForLabel(formatFourWheelerBayLabel(fourWheelerIndex)),
+        )
+        fourWheelerIndex += 1
+      }
+    }
+  }
+
+  return map
+}
+
+function remapSlotId(
+  slotId: string,
+  idMap: Map<string, string>,
+  validIds: ReadonlySet<string>,
+): string {
+  const mapped = idMap.get(slotId) ?? slotId
+  return validIds.has(mapped) ? mapped : slotId
+}
+
+/** Expands to 100 bays and remaps legacy slot ids without dropping sessions. */
+function upgradeDemoLotSlots(state: ParkingLotState): ParkingLotState {
+  const canonical = createDemoParkingSlots()
+  const canonicalIds = new Set(canonical.map((slot) => slot.id))
+  const idMap = buildLegacySlotIdRemap()
+
+  const existingByCanonicalId = new Map<string, ParkingSlot>()
+  for (const slot of state.slots) {
+    const canonicalId = remapSlotId(slot.id, idMap, canonicalIds)
+    if (canonicalIds.has(canonicalId)) {
+      existingByCanonicalId.set(canonicalId, slot)
+    }
+  }
+
+  const slots = canonical.map((template) => {
+    const existing = existingByCanonicalId.get(template.id)
+    if (!existing) {
+      return template
+    }
+    return {
+      ...template,
+      status: existing.status,
+      bayType: bayTypeForDemoLabel(template.label),
+    }
+  })
+
+  const sessions = state.sessions.map((session) => ({
+    ...session,
+    slotId: remapSlotId(session.slotId, idMap, canonicalIds),
+  }))
+
+  const completed = state.completed.map((txn) => ({
+    ...txn,
+    slotId: remapSlotId(txn.slotId, idMap, canonicalIds),
+  }))
+
+  return applySlotStatusesFromSessions({
+    slots,
+    sessions,
+    completed,
+  })
 }
 
 function isConsistentLotState(state: ParkingLotState): boolean {
@@ -158,8 +279,6 @@ function isConsistentLotState(state: ParkingLotState): boolean {
   }
 
   const sessionIds = new Set<string>()
-  const sessionBySlotId = new Map<string, ParkingSession>()
-
   for (const session of state.sessions) {
     if (!slotIds.has(session.slotId)) {
       return false
@@ -168,20 +287,6 @@ function isConsistentLotState(state: ParkingLotState): boolean {
       return false
     }
     sessionIds.add(session.id)
-    if (sessionBySlotId.has(session.slotId)) {
-      return false
-    }
-    sessionBySlotId.set(session.slotId, session)
-  }
-
-  for (const slot of state.slots) {
-    const hasSession = sessionBySlotId.has(slot.id)
-    if (slot.status === 'occupied' && !hasSession) {
-      return false
-    }
-    if (slot.status === 'available' && hasSession) {
-      return false
-    }
   }
 
   const completedIds = new Set<string>()
@@ -198,7 +303,7 @@ function isConsistentLotState(state: ParkingLotState): boolean {
     completedIds.add(txn.id)
   }
 
-  return true
+  return validateLotSessionSlotRules(state)
 }
 
 export function parseParkingLotState(raw: unknown): ParkingLotState | null {
@@ -241,7 +346,16 @@ export function parseParkingLotState(raw: unknown): ParkingLotState | null {
     completed.push(txn)
   }
 
-  const state: ParkingLotState = { slots, sessions, completed }
+  let state: ParkingLotState = applySlotStatusesFromSessions({
+    slots,
+    sessions,
+    completed,
+  })
+
+  if (needsDemoSlotSchemaUpgrade(state.slots)) {
+    state = upgradeDemoLotSlots(state)
+  }
+
   return isConsistentLotState(state) ? state : null
 }
 

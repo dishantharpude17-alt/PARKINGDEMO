@@ -1,12 +1,18 @@
 import type { ParkingLotState } from '../logic/vehicleEntry.ts'
 import {
+  defaultVehicleRatesInr,
+  normalizeAppSettings,
+} from '../logic/appSettingsValidation.ts'
+import {
   DEFAULT_APP_SETTINGS,
   type AppSettings,
   type DateFormatMode,
   type DensityMode,
   type ThemeMode,
   type TimeFormatMode,
+  type VehicleHourlyRates,
 } from '../types/appSettings.ts'
+import { VEHICLE_TYPES, type VehicleType } from '../types/vehicleSession.ts'
 
 const LOT_STATE_STORAGE_KEY = 'parkingdemo.lotState.v1'
 
@@ -32,15 +38,42 @@ function parseDateFormat(value: unknown): DateFormatMode | null {
   return value === 'medium' || value === 'short' ? value : null
 }
 
+function parsePositiveNumber(value: unknown): number | null {
+  return typeof value === 'number' && value > 0 && Number.isFinite(value)
+    ? value
+    : null
+}
+
+function parseDiscountPercent(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback
+  }
+  return Math.min(90, Math.max(0, value))
+}
+
+function parseVehicleRatesInr(
+  raw: unknown,
+  legacyHourlyRateInr: number,
+): VehicleHourlyRates {
+  const rates = defaultVehicleRatesInr(legacyHourlyRateInr)
+  if (!isRecord(raw)) {
+    return rates
+  }
+  for (const type of VEHICLE_TYPES) {
+    const parsed = parsePositiveNumber(raw[type])
+    if (parsed !== null) {
+      rates[type as VehicleType] = Math.round(parsed)
+    }
+  }
+  return rates
+}
+
 export function parseAppSettings(raw: unknown): AppSettings | null {
   if (!isRecord(raw)) {
     return null
   }
 
-  const hourlyRateInr =
-    typeof raw.hourlyRateInr === 'number' && raw.hourlyRateInr > 0
-      ? raw.hourlyRateInr
-      : null
+  const hourlyRateInr = parsePositiveNumber(raw.hourlyRateInr)
   const minBillableHours =
     typeof raw.minBillableHours === 'number' &&
     raw.minBillableHours >= 1 &&
@@ -81,9 +114,33 @@ export function parseAppSettings(raw: unknown): AppSettings | null {
     return null
   }
 
-  return {
+  const vehicleRatesInr = parseVehicleRatesInr(
+    raw.vehicleRatesInr,
+    hourlyRateInr,
+  )
+
+  const longStayDiscountsEnabled =
+    typeof raw.longStayDiscountsEnabled === 'boolean'
+      ? raw.longStayDiscountsEnabled
+      : DEFAULT_APP_SETTINGS.longStayDiscountsEnabled
+
+  return normalizeAppSettings({
     hourlyRateInr,
     minBillableHours,
+    vehicleRatesInr,
+    longStayDiscountsEnabled,
+    longStay12To24DiscountPercent: parseDiscountPercent(
+      raw.longStay12To24DiscountPercent,
+      DEFAULT_APP_SETTINGS.longStay12To24DiscountPercent,
+    ),
+    longStay24PackageDiscountPercent: parseDiscountPercent(
+      raw.longStay24PackageDiscountPercent,
+      DEFAULT_APP_SETTINGS.longStay24PackageDiscountPercent,
+    ),
+    longStay12PackageDiscountPercent: parseDiscountPercent(
+      raw.longStay12PackageDiscountPercent,
+      DEFAULT_APP_SETTINGS.longStay12PackageDiscountPercent,
+    ),
     lotName,
     occupancyAlertsEnabled,
     occupancyThresholdPercent,
@@ -91,7 +148,7 @@ export function parseAppSettings(raw: unknown): AppSettings | null {
     timeFormat,
     theme,
     density,
-  }
+  })
 }
 
 export function loadAppSettings(): AppSettings {
@@ -109,7 +166,7 @@ export function loadAppSettings(): AppSettings {
 
 export function saveAppSettings(settings: AppSettings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeAppSettings(settings)))
   } catch {
     // ignore storage failures
   }
@@ -121,7 +178,7 @@ export function estimateParkingDemoStorageBytes(
   settings: AppSettings,
 ): number {
   const lotValue = JSON.stringify(lotState)
-  const settingsValue = JSON.stringify(settings)
+  const settingsValue = JSON.stringify(normalizeAppSettings(settings))
   const chars =
     LOT_STATE_STORAGE_KEY.length +
     lotValue.length +

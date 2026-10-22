@@ -21,6 +21,17 @@ export const LONG_STAY_PRICING = {
   package12Multiplier: 0.75,
 } as const
 
-export function getHourlyRateForVehicleType(vehicleType: VehicleType): number {
+export function getHourlyRateForVehicleType(
+  vehicleType: VehicleType,
+  rates?: Partial<Record<VehicleType, number>>,
+): number {
+  const configured = rates?.[vehicleType]
+  if (
+    typeof configured === 'number' &&
+    Number.isFinite(configured) &&
+    configured > 0
+  ) {
+    return configured
+  }
   return VEHICLE_HOURLY_RATE_INR[vehicleType] ?? HOURLY_PARKING_RATE_INR
 }

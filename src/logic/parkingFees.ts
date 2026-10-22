@@ -1,8 +1,9 @@
+import { getHourlyRateForVehicleType } from '../config/parkingRates.ts'
 import {
-  getHourlyRateForVehicleType,
-  HOURLY_PARKING_RATE_INR,
-  LONG_STAY_PRICING,
-} from '../config/parkingRates.ts'
+  DEFAULT_APP_SETTINGS,
+  type PricingOptions,
+  pricingOptionsFromSettings,
+} from '../types/appSettings.ts'
 import type { VehicleType } from '../types/vehicleSession.ts'
 
 export const MS_PER_HOUR = 60 * 60 * 1000
@@ -36,7 +37,7 @@ export function calculateBillableHours(
 
 export function calculateStandardHourlyFeeInr(
   durationMs: number,
-  hourlyRate: number = HOURLY_PARKING_RATE_INR,
+  hourlyRate: number = DEFAULT_APP_SETTINGS.vehicleRatesInr.car,
   minBillableHours: number = 1,
 ): number {
   const hours = calculateBillableHours(durationMs, minBillableHours)
@@ -49,7 +50,7 @@ export function calculateStandardHourlyFeeInr(
 /** @deprecated Prefer calculateParkingFeeBreakdown for vehicle-type and long-stay rules. */
 export function calculateParkingFeeInr(
   durationMs: number,
-  hourlyRate: number = HOURLY_PARKING_RATE_INR,
+  hourlyRate: number = DEFAULT_APP_SETTINGS.vehicleRatesInr.car,
   minBillableHours: number = 1,
 ): number {
   return calculateStandardHourlyFeeInr(
@@ -73,6 +74,21 @@ function roundInr(amount: number): number {
   return Math.round(amount)
 }
 
+function longStayMultipliers(pricing: PricingOptions): {
+  stay12To24: number
+  package24: number
+  package12: number
+} {
+  if (!pricing.longStayDiscountsEnabled) {
+    return { stay12To24: 1, package24: 1, package12: 1 }
+  }
+  return {
+    stay12To24: 1 - pricing.longStay12To24DiscountPercent / 100,
+    package24: 1 - pricing.longStay24PackageDiscountPercent / 100,
+    package12: 1 - pricing.longStay12PackageDiscountPercent / 100,
+  }
+}
+
 /**
  * Authoritative parking fee: vehicle hourly rate, billable-hour rounding,
  * then long-stay discounts (never compounded on already-discounted segments).
@@ -80,9 +96,14 @@ function roundInr(amount: number): number {
 export function calculateParkingFeeBreakdown(
   durationMs: number,
   vehicleType: VehicleType,
-  minBillableHours: number = 1,
+  pricing: PricingOptions = pricingOptionsFromSettings(DEFAULT_APP_SETTINGS),
 ): ParkingFeeBreakdown {
-  const hourlyRateInr = getHourlyRateForVehicleType(vehicleType)
+  const hourlyRateInr = getHourlyRateForVehicleType(
+    vehicleType,
+    pricing.vehicleRatesInr,
+  )
+  const minBillableHours = pricing.minBillableHours
+  const multipliers = longStayMultipliers(pricing)
   const billableHours = calculateBillableHours(durationMs, minBillableHours)
 
   if (durationMs < 0) {
@@ -109,8 +130,10 @@ export function calculateParkingFeeBreakdown(
   if (durationMs < MS_PER_12_HOURS) {
     feeInr = standardFeeInr
   } else if (durationMs < MS_PER_24_HOURS) {
-    feeInr = roundInr(standardFeeInr * LONG_STAY_PRICING.stay12To24Multiplier)
-    discountDescription = '12–24 hour stay (25% off standard total)'
+    feeInr = roundInr(standardFeeInr * multipliers.stay12To24)
+    if (pricing.longStayDiscountsEnabled && multipliers.stay12To24 < 1) {
+      discountDescription = `12–24 hour stay (${pricing.longStay12To24DiscountPercent}% off standard total)`
+    }
   } else {
     const fullDayCount = Math.floor(durationMs / MS_PER_24_HOURS)
     let remainderMs = durationMs % MS_PER_24_HOURS
@@ -120,9 +143,7 @@ export function calculateParkingFeeBreakdown(
       hourlyRateInr,
       minBillableHours,
     )
-    const package24Fee = roundInr(
-      standard24 * LONG_STAY_PRICING.package24Multiplier,
-    )
+    const package24Fee = roundInr(standard24 * multipliers.package24)
 
     feeInr = fullDayCount * package24Fee
 
@@ -132,7 +153,7 @@ export function calculateParkingFeeBreakdown(
         hourlyRateInr,
         minBillableHours,
       )
-      feeInr += roundInr(standard12 * LONG_STAY_PRICING.package12Multiplier)
+      feeInr += roundInr(standard12 * multipliers.package12)
       remainderMs -= MS_PER_12_HOURS
       discountDescription =
         fullDayCount > 0

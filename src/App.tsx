@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useState,
   type FormEvent,
@@ -8,8 +9,13 @@ import {
 import CheckoutFlowDialog, {
   type CheckoutFlowStep,
 } from './components/CheckoutFlowDialog.tsx'
+import PaymentReceiptDialog from './components/PaymentReceiptDialog.tsx'
+import FacilityLocationSummary from './components/FacilityLocationSummary.tsx'
+import LegacyParkingImportPanel from './components/LegacyParkingImportPanel.tsx'
+import OperatorAuthPage from './components/OperatorAuthPage.tsx'
 import LiveParkingFeeEstimate from './components/LiveParkingFeeEstimate.tsx'
 import ParkingMap from './components/ParkingMap.tsx'
+import DashboardPage from './components/DashboardPage.tsx'
 import SettingsPage from './components/SettingsPage.tsx'
 import { useLiveParkingClock } from './hooks/useLiveParkingClock.ts'
 import { formatLocalDateTime } from './logic/dateTimeDisplay.ts'
@@ -28,12 +34,16 @@ import {
 } from './logic/historyCsvExport.ts'
 import { getOccupancyAlerts } from './logic/occupancyAlerts.ts'
 import { getParkingAnalyticsMetrics } from './logic/parkingAnalytics.ts'
-import { findActiveSessionsByRegistrationQuery } from './logic/vehicleLocator.ts'
+import AnalyticsPage from './components/AnalyticsPage.tsx'
+import VehicleExitPage from './components/VehicleExitPage.tsx'
+import VehiclePhotoCapture from './components/VehiclePhotoCapture.tsx'
+import type { VehiclePhotoRecognitionResult } from './logic/vehiclePhotoRecognition.ts'
 import { formatDuration, formatInr } from './logic/parkingFees.ts'
 import {
   attemptVehicleEntry,
   type ParkingLotState,
 } from './logic/vehicleEntry.ts'
+import { canViewPaymentReceipt } from './logic/paymentReceipt.ts'
 import {
   attemptVehicleCheckout,
   getVehicleCheckoutQuote,
@@ -42,17 +52,27 @@ import {
 } from './logic/vehicleCheckout.ts'
 import {
   estimateParkingDemoStorageBytes,
-  loadAppSettings,
-  saveAppSettings,
 } from './persistence/appSettingsStorage.ts'
 import {
+  loadAccountAppSettings,
+  loadAccountLotState,
+  saveAccountAppSettings,
+  saveAccountLotState,
+} from './persistence/accountParkingStorage.ts'
+import { useLocalOwnerAuth } from './hooks/useLocalOwnerAuth.ts'
+import {
   createInitialLotState,
-  loadParkingLotState,
-  saveParkingLotState,
 } from './persistence/lotStateStorage.ts'
-import type { AppSettings } from './types/appSettings.ts'
+import { validateAppSettings } from './logic/appSettingsValidation.ts'
+import {
+  DEFAULT_APP_SETTINGS,
+  type AppSettings,
+  pricingOptionsFromSettings,
+} from './types/appSettings.ts'
+import type { DashboardNavigateAction } from './logic/dashboardNavigation.ts'
 import {
   getSlotCounts,
+  type SlotBayType,
   type SlotFilter,
 } from './types/parkingSlot.ts'
 import {
@@ -67,6 +87,7 @@ const NAV_ITEMS = [
   'Dashboard',
   'Parking Slots',
   'Vehicle Entry',
+  'Vehicle Exit',
   'Parking History',
   'Analytics',
   'Settings',
@@ -77,12 +98,13 @@ const APP_VERSION = '0.0.0'
 type AppView = (typeof NAV_ITEMS)[number]
 
 const VIEW_SUBTITLES: Record<AppView, string> = {
-  Dashboard: 'Real-time occupancy, map, and vehicle operations',
+  Dashboard: 'Analytics-first overview with live lot operations',
   'Parking Slots': 'Interactive lot map with live slot status',
-  'Vehicle Entry': 'Register arrivals and check out parked vehicles',
+  'Vehicle Entry': 'Register arrivals and assign parking slots',
+  'Vehicle Exit': 'Find active sessions by registration and complete checkout',
   'Parking History': 'Search active and completed parking records',
   Analytics: 'Revenue and occupancy insights from your lot data',
-  Settings: 'Pricing, alerts, display, and data management',
+  Settings: 'ParkingPulse control center — lot, billing, alerts, and data',
 }
 
 function NavIcon({ view }: { view: AppView }) {
@@ -121,6 +143,14 @@ function NavIcon({ view }: { view: AppView }) {
           <path d="M5 16h14l-1.5-5.5a2 2 0 0 0-1.9-1.4H8.4a2 2 0 0 0-1.9 1.4L5 16Z" />
           <circle cx="8" cy="18" r="1.5" />
           <circle cx="16" cy="18" r="1.5" />
+        </svg>
+      )
+    case 'Vehicle Exit':
+      return (
+        <svg {...iconProps}>
+          <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+          <path d="M10 17l5-5-5-5" />
+          <path d="M15 12H3" />
         </svg>
       )
     case 'Parking History':
@@ -164,20 +194,55 @@ const VEHICLE_TYPE_LABELS: Record<VehicleType, string> = {
 }
 
 function App() {
+  const {
+    session: ownerSession,
+    accountId: ownerAccountId,
+    username: ownerUsername,
+    facility: ownerFacility,
+    refreshSession,
+    logout,
+  } = useLocalOwnerAuth()
   const [activeView, setActiveView] = useState<AppView>('Dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
+  const logoutDialogTitleId = useId()
+  const logoutDialogDescId = useId()
+  const [loadedAccountId, setLoadedAccountId] = useState<string | null>(null)
   const [lotState, setLotState] = useState<ParkingLotState>(() =>
-    loadParkingLotState(),
+    createInitialLotState(),
   )
-  const [settings, setSettings] = useState<AppSettings>(() => loadAppSettings())
+  const [settings, setSettings] = useState<AppSettings>(() => ({
+    ...DEFAULT_APP_SETTINGS,
+  }))
+
+  const ownerAccountFacilityName =
+    ownerFacility?.name ?? DEFAULT_APP_SETTINGS.lotName
+
+  if (ownerAccountId !== loadedAccountId) {
+    if (ownerAccountId === null) {
+      setLoadedAccountId(null)
+    } else {
+      setLotState(loadAccountLotState(ownerAccountId))
+      setSettings(
+        loadAccountAppSettings(ownerAccountId, ownerAccountFacilityName),
+      )
+      setLoadedAccountId(ownerAccountId)
+    }
+  }
 
   useEffect(() => {
-    saveParkingLotState(lotState)
-  }, [lotState])
+    if (!ownerSession?.accountId || loadedAccountId !== ownerSession.accountId) {
+      return
+    }
+    saveAccountLotState(ownerSession.accountId, lotState)
+  }, [lotState, ownerSession?.accountId, loadedAccountId])
 
   useEffect(() => {
-    saveAppSettings(settings)
-  }, [settings])
+    if (!ownerSession?.accountId || loadedAccountId !== ownerSession.accountId) {
+      return
+    }
+    saveAccountAppSettings(ownerSession.accountId, settings)
+  }, [settings, ownerSession?.accountId, loadedAccountId])
 
   const storageBytes = useMemo(
     () => estimateParkingDemoStorageBytes(lotState, settings),
@@ -195,39 +260,21 @@ function App() {
   )
 
   const pricingOptions = useMemo(
-    () => ({
-      hourlyRateInr: settings.hourlyRateInr,
-      minBillableHours: settings.minBillableHours,
-    }),
-    [settings.hourlyRateInr, settings.minBillableHours],
+    () => pricingOptionsFromSettings(settings),
+    [settings],
   )
 
   const liveNowMs = useLiveParkingClock()
 
-  function updateSettings(patch: Partial<AppSettings>) {
-    setSettings((current) => {
-      const next = { ...current, ...patch }
-      if (!Number.isFinite(next.hourlyRateInr) || next.hourlyRateInr <= 0) {
-        return current
-      }
-      if (
-        !Number.isInteger(next.minBillableHours) ||
-        next.minBillableHours < 1
-      ) {
-        return current
-      }
-      if (
-        !Number.isInteger(next.occupancyThresholdPercent) ||
-        next.occupancyThresholdPercent < 1 ||
-        next.occupancyThresholdPercent > 100
-      ) {
-        return current
-      }
-      if (!next.lotName.trim()) {
-        return current
-      }
-      return { ...next, lotName: next.lotName.trim() }
-    })
+  function applySettings(
+    next: AppSettings,
+  ): { ok: true } | { ok: false; errors: string[] } {
+    const result = validateAppSettings(next)
+    if (!result.ok) {
+      return result
+    }
+    setSettings(result.settings)
+    return { ok: true }
   }
 
   function handleResetDemoData() {
@@ -249,12 +296,29 @@ function App() {
     setLotState(createInitialLotState())
   }
   const [slotFilter, setSlotFilter] = useState<SlotFilter>('all')
+  const [slotBayTypeFilter, setSlotBayTypeFilter] = useState<
+    'all' | SlotBayType
+  >('all')
+  const [analyticsHighlightMetric, setAnalyticsHighlightMetric] = useState<
+    'occupancy' | 'today-revenue' | null
+  >(null)
+  const [vehicleEntryFocusActive, setVehicleEntryFocusActive] = useState(false)
+  const [activeSessionVehicleFilter, setActiveSessionVehicleFilter] =
+    useState<VehicleType | null>(null)
+  const [historyVehicleTypeFilter, setHistoryVehicleTypeFilter] =
+    useState<VehicleType | null>(null)
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null)
   const [registrationInput, setRegistrationInput] = useState('')
   const [vehicleTypeInput, setVehicleTypeInput] = useState<VehicleType | ''>(
     'car',
   )
+  const [entrySelectedSlotId, setEntrySelectedSlotId] = useState<string | null>(
+    null,
+  )
   const [formError, setFormError] = useState<string | null>(null)
+  const [entryRecognitionMessage, setEntryRecognitionMessage] = useState<
+    string | null
+  >(null)
   const [entrySuccess, setEntrySuccess] = useState<string | null>(null)
   const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
@@ -275,6 +339,10 @@ function App() {
     null,
   )
   const [checkoutProcessing, setCheckoutProcessing] = useState(false)
+  const [historyReceiptView, setHistoryReceiptView] = useState<{
+    transaction: CompletedParkingTransaction
+    slotLabel: string
+  } | null>(null)
   const [historySearchInput, setHistorySearchInput] = useState('')
   const [historyFromDateInput, setHistoryFromDateInput] = useState('')
   const [historyToDateInput, setHistoryToDateInput] = useState('')
@@ -290,9 +358,6 @@ function App() {
   const [historyExportMessage, setHistoryExportMessage] = useState<string | null>(
     null,
   )
-  const [locatorQuery, setLocatorQuery] = useState('')
-  const [locatorSearched, setLocatorSearched] = useState(false)
-
   const { slots, sessions, completed } = lotState
 
   const slotCounts = useMemo(() => getSlotCounts(slots), [slots])
@@ -316,11 +381,6 @@ function App() {
     ],
   )
 
-  const locatorMatches = useMemo(
-    () => findActiveSessionsByRegistrationQuery(sessions, locatorQuery),
-    [sessions, locatorQuery],
-  )
-
   const slotLabelById = useMemo(() => {
     const map = new Map<string, string>()
     for (const slot of slots) {
@@ -330,16 +390,33 @@ function App() {
   }, [slots])
 
   const filteredSlots = useMemo(() => {
-    if (slotFilter === 'all') {
-      return slots
+    const filtered = slots.filter((slot) => {
+      if (slotBayTypeFilter !== 'all' && slot.bayType !== slotBayTypeFilter) {
+        return false
+      }
+      if (slotFilter === 'all') {
+        return true
+      }
+      return slot.status === slotFilter
+    })
+    if (
+      selectedSlotId !== null &&
+      !filtered.some((slot) => slot.id === selectedSlotId)
+    ) {
+      const pinned = slots.find((slot) => slot.id === selectedSlotId)
+      if (pinned) {
+        return [...filtered, pinned]
+      }
     }
-    return slots.filter((slot) => slot.status === slotFilter)
-  }, [slots, slotFilter])
+    return filtered
+  }, [slots, slotFilter, slotBayTypeFilter, selectedSlotId])
 
-  const sessionBySlotId = useMemo(() => {
-    const map = new Map<string, (typeof sessions)[number]>()
+  const sessionsBySlotId = useMemo(() => {
+    const map = new Map<string, (typeof sessions)[number][]>()
     for (const session of sessions) {
-      map.set(session.slotId, session)
+      const list = map.get(session.slotId) ?? []
+      list.push(session)
+      map.set(session.slotId, list)
     }
     return map
   }, [sessions])
@@ -363,6 +440,15 @@ function App() {
     [sessions],
   )
 
+  const visibleActiveSessions = useMemo(() => {
+    if (!activeSessionVehicleFilter) {
+      return activeSessions
+    }
+    return activeSessions.filter(
+      (session) => session.vehicleType === activeSessionVehicleFilter,
+    )
+  }, [activeSessions, activeSessionVehicleFilter])
+
   const activityFeed = useMemo(
     () => buildActivityFeed(sessions, completed, slotLabelById),
     [sessions, completed, slotLabelById],
@@ -378,18 +464,26 @@ function App() {
     [sessions, completed, slotLabelById],
   )
 
-  const filteredHistoryRows = useMemo(
-    () =>
-      filterParkingHistoryRows(
-        parkingHistoryRows,
-        appliedHistoryFilters.search,
-        {
-          fromDate: appliedHistoryFilters.fromDate,
-          toDate: appliedHistoryFilters.toDate,
-        },
-      ),
-    [parkingHistoryRows, appliedHistoryFilters],
-  )
+  const filteredHistoryRows = useMemo(() => {
+    let rows = filterParkingHistoryRows(
+      parkingHistoryRows,
+      appliedHistoryFilters.search,
+      {
+        fromDate: appliedHistoryFilters.fromDate,
+        toDate: appliedHistoryFilters.toDate,
+      },
+    )
+    if (historyVehicleTypeFilter) {
+      rows = rows.filter(
+        (row) => row.vehicleType === historyVehicleTypeFilter,
+      )
+    }
+    return rows
+  }, [
+    parkingHistoryRows,
+    appliedHistoryFilters,
+    historyVehicleTypeFilter,
+  ])
 
   const filteredCompletedForExport = useMemo(
     () =>
@@ -437,6 +531,7 @@ function App() {
     const result = attemptVehicleEntry(lotState, {
       registration: registrationInput,
       vehicleType: vehicleTypeInput,
+      preferredSlotId: entrySelectedSlotId,
     })
 
     if (!result.ok) {
@@ -450,11 +545,7 @@ function App() {
     )
     setRegistrationInput('')
     setVehicleTypeInput('car')
-  }
-
-  function handleLocatorSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setLocatorSearched(true)
+    setEntrySelectedSlotId(null)
   }
 
   function handleHistoryExport() {
@@ -582,164 +673,24 @@ function App() {
     resetCheckoutFlowState()
   }
 
-  const summaryCards = [
-    {
-      id: 'total',
-      label: 'Total Slots',
-      value: String(slotCounts.total),
-      hint: 'From demo lot configuration',
-    },
-    {
-      id: 'available',
-      label: 'Available',
-      value: String(slotCounts.available),
-      hint: 'Derived from slot statuses',
-    },
-    {
-      id: 'occupied',
-      label: 'Occupied',
-      value: String(slotCounts.occupied),
-      hint: 'Derived from slot statuses',
-    },
-    {
-      id: 'occupancy',
-      label: 'Occupancy',
-      value: `${analyticsMetrics.occupancyPercent}%`,
-      hint: `${slotCounts.occupied} of ${slotCounts.total} slots in use`,
-    },
-  ] as const
-
-  const analyticsCards = [
-    {
-      id: 'completed',
-      label: 'Completed transactions',
-      value: String(analyticsMetrics.totalCompleted),
-      hint: 'All time in this session',
-    },
-    {
-      id: 'total-revenue',
-      label: 'Total revenue',
-      value: formatInr(analyticsMetrics.totalRevenueInr),
-      hint: 'Sum of completed fees',
-    },
-    {
-      id: 'today-revenue',
-      label: "Today's revenue",
-      value: formatInr(analyticsMetrics.todaysRevenueInr),
-      hint: 'Local checkout date',
-    },
-    {
-      id: 'occupancy',
-      label: 'Current occupancy',
-      value: `${analyticsMetrics.occupancyPercent}%`,
-      hint: `${slotCounts.occupied} of ${slotCounts.total} slots occupied`,
-    },
-  ] as const
-
-  const overviewSection = (
-    <section className="summary-section" aria-labelledby="summary-heading">
-      <div className="section-heading">
-        <h2 id="summary-heading">Overview</h2>
-        <p className="demo-badge" title="Counts derived from current slot state">
-          Live from parking state
-        </p>
-      </div>
-      {occupancyAlerts.length > 0 ? (
-        <ul className="occupancy-alerts" aria-label="Occupancy alerts">
-          {occupancyAlerts.map((alert) => (
-            <li
-              key={alert.id}
-              className={`occupancy-alert occupancy-alert--${alert.severity}`}
-              role="status"
-            >
-              {alert.message}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <ul className="stat-grid">
-        {summaryCards.map((card) => (
-          <li key={card.id}>
-            <article className={`stat-card stat-card--${card.id}`}>
-              <p className="stat-label">{card.label}</p>
-              <p className="stat-value" aria-describedby={`${card.id}-hint`}>
-                {card.value}
-              </p>
-              <p className="stat-hint" id={`${card.id}-hint`}>
-                {card.hint}
-              </p>
-            </article>
-          </li>
-        ))}
-      </ul>
-    </section>
-  )
-
-  const vehicleLocatorPanel = (
-    <section
-      className="panel locator-panel"
-      aria-labelledby="locator-heading"
-    >
-      <h2 id="locator-heading">Quick vehicle locator</h2>
-      <p className="panel-description">
-        Find an actively parked vehicle by registration (read-only search).
-      </p>
-      <form className="locator-form" onSubmit={handleLocatorSubmit}>
-        <div className="field">
-          <label htmlFor="locator-query">Registration number</label>
-          <input
-            id="locator-query"
-            type="search"
-            value={locatorQuery}
-            onChange={(event) => {
-              setLocatorQuery(event.target.value)
-              setLocatorSearched(false)
-            }}
-            placeholder="MH12AA1134"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </div>
-        <button type="submit" className="entry-submit">
-          Locate vehicle
-        </button>
-      </form>
-      {!locatorSearched ? (
-        <p className="locator-hint">Enter a registration and search active sessions.</p>
-      ) : locatorQuery.trim() === '' ? (
-        <p className="locator-result locator-result--empty" role="status">
-          Enter a registration number to search parked vehicles.
-        </p>
-      ) : locatorMatches.length === 0 ? (
-        <p className="locator-result locator-result--empty" role="status">
-          No active parked vehicle matches &ldquo;{locatorQuery.trim()}&rdquo;.
-        </p>
-      ) : (
-        <ul className="locator-results">
-          {locatorMatches.map((session) => (
-            <li key={session.id}>
-              <p className="locator-match">
-                <span className="locator-reg">{session.registrationNumber}</span>
-                <span className="locator-slot">
-                  Slot{' '}
-                  {slotLabelById.get(session.slotId) ?? session.slotId}
-                </span>
-              </p>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  )
+  function openHistoryReceipt(transactionId: string) {
+    const transaction = lotState.completed.find((txn) => txn.id === transactionId)
+    if (!transaction) {
+      return
+    }
+    setHistoryReceiptView({
+      transaction,
+      slotLabel: slotLabelById.get(transaction.slotId) ?? transaction.slotId,
+    })
+  }
 
   const slotPanel = (
     <section className="panel panel--lot" aria-labelledby="lot-heading">
       <div className="panel-header">
         <div>
           <h2 id="lot-heading">Parking lot</h2>
-          <p className="panel-description">
-            Interactive lot map — select a bay to inspect status and vehicle
-            details. Status updates via vehicle entry and checkout.
+          <p className="panel-description panel-description--tight">
+            Select a bay for live status and vehicle details.
           </p>
         </div>
         <ul className="slot-legend" aria-label="Slot status legend">
@@ -759,6 +710,23 @@ function App() {
           </li>
         </ul>
       </div>
+
+      {slotBayTypeFilter !== 'all' ? (
+        <p className="view-filter-banner view-filter-banner--compact" role="status">
+          Zone:{' '}
+          {slotBayTypeFilter === 'two_wheeler'
+            ? 'Two-wheeler bays'
+            : 'Four-wheeler bays'}
+          .{' '}
+          <button
+            type="button"
+            className="view-filter-banner__clear"
+            onClick={() => setSlotBayTypeFilter('all')}
+          >
+            Show all zones
+          </button>
+        </p>
+      ) : null}
 
       <div
         className="slot-filter"
@@ -790,18 +758,63 @@ function App() {
           slots={filteredSlots}
           selectedSlotId={visibleSelectedSlotId}
           onSelectSlot={setSelectedSlotId}
-          sessionBySlotId={sessionBySlotId}
+          sessionsBySlotId={sessionsBySlotId}
           formatEntryTime={formatTimestamp}
           pricing={pricingOptions}
           liveNowMs={liveNowMs}
+          onRequestCheckout={requestCheckoutConfirm}
+          checkoutProcessing={checkoutProcessing}
         />
       )}
     </section>
   )
 
-  const entryFormBlock = (
+  const zoneSlotCounts = useMemo(() => {
+    let twoWheelerAvailable = 0
+    let twoWheelerOccupied = 0
+    let fourWheelerAvailable = 0
+    let fourWheelerOccupied = 0
+    for (const slot of slots) {
+      if (slot.bayType === 'two_wheeler') {
+        if (slot.status === 'available') {
+          twoWheelerAvailable += 1
+        } else {
+          twoWheelerOccupied += 1
+        }
+      } else if (slot.status === 'available') {
+        fourWheelerAvailable += 1
+      } else {
+        fourWheelerOccupied += 1
+      }
+    }
+    return {
+      twoWheeler: {
+        available: twoWheelerAvailable,
+        occupied: twoWheelerOccupied,
+      },
+      fourWheeler: {
+        available: fourWheelerAvailable,
+        occupied: fourWheelerOccupied,
+      },
+    }
+  }, [slots])
+
+  const vehicleEntryForm = (
     <>
-      <form className="entry-form" onSubmit={handleVehicleEntrySubmit}>
+      <VehiclePhotoCapture
+        purpose="entry"
+        disabled={checkoutProcessing}
+        onRecognitionResult={handleEntryPhotoRecognition}
+      />
+      {entryRecognitionMessage ? (
+        <p className="form-message form-message--success" role="status">
+          {entryRecognitionMessage}
+        </p>
+      ) : null}
+      <form
+        className="entry-form entry-form--vehicle-entry"
+        onSubmit={handleVehicleEntrySubmit}
+      >
         <div className="field">
           <label htmlFor="registration">Registration number</label>
           <input
@@ -820,23 +833,70 @@ function App() {
             Uppercase letters and digits only, e.g. MH12AA1134
           </p>
         </div>
-        <div className="field">
-          <label htmlFor="vehicle-type">Vehicle type</label>
-          <select
-            id="vehicle-type"
-            name="vehicleType"
-            value={vehicleTypeInput}
-            onChange={(event) =>
-              setVehicleTypeInput(event.target.value as VehicleType | '')
-            }
+        <div className="entry-form-type-row">
+          <div className="field entry-form-type-field">
+            <label htmlFor="vehicle-type">Vehicle type</label>
+            <select
+              id="vehicle-type"
+              name="vehicleType"
+              value={vehicleTypeInput}
+              onChange={(event) => {
+                setVehicleTypeInput(event.target.value as VehicleType | '')
+                setEntrySelectedSlotId(null)
+              }}
+            >
+              {VEHICLE_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {VEHICLE_TYPE_LABELS[type]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="submit"
+            className="entry-submit entry-form-register-btn"
           >
-            {VEHICLE_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {VEHICLE_TYPE_LABELS[type]}
-              </option>
-            ))}
-          </select>
+            Register entry
+          </button>
         </div>
+        {vehicleTypeInput ? (
+          <div className="vehicle-entry-map-wrap">
+            <h3 className="vehicle-entry-map-heading">Choose parking bay</h3>
+            <p className="field-hint vehicle-entry-map-hint">
+              Optional — tap a compatible available bay to assign manually, or
+              leave unselected for automatic allocation.
+            </p>
+            <ParkingMap
+              layoutMode="entry"
+              entryVehicleType={vehicleTypeInput}
+              slots={slots}
+              selectedSlotId={entrySelectedSlotId}
+              onSelectSlot={(slotId) =>
+                setEntrySelectedSlotId((current) =>
+                  current === slotId ? null : slotId,
+                )
+              }
+              sessionsBySlotId={sessionsBySlotId}
+              formatEntryTime={formatTimestamp}
+              pricing={pricingOptions}
+              liveNowMs={liveNowMs}
+            />
+            <p className="vehicle-entry-slot-choice" role="status">
+              {entrySelectedSlotId ? (
+                <>
+                  Selected bay:{' '}
+                  <strong>
+                    {slotLabelById.get(entrySelectedSlotId) ??
+                      entrySelectedSlotId}
+                  </strong>
+                  . Confirm registration and register entry.
+                </>
+              ) : (
+                <>No bay selected — next available compatible bay will be assigned.</>
+              )}
+            </p>
+          </div>
+        ) : null}
         {formError ? (
           <p className="form-message form-message--error" role="alert">
             {formError}
@@ -857,86 +917,121 @@ function App() {
             {checkoutMessage}
           </p>
         ) : null}
-        <button type="submit" className="entry-submit">
-          Register entry
-        </button>
       </form>
+    </>
+  )
 
-      <div className="activity-block">
+  const activeParkedVehiclesSection = (
+    <>
+      {visibleActiveSessions.length === 0 ? (
+        <div className="empty-state empty-state--compact" role="status">
+          <p className="empty-state-title">No vehicles parked</p>
+          <p className="empty-state-text">
+            Successful entries will appear here with slot, duration, and checkout.
+          </p>
+        </div>
+      ) : (
+        <div className="dashboard-sessions-table-wrap">
+        <ul className="vehicle-list vehicle-list--dashboard">
+          <li className="vehicle-list-header" aria-hidden="true">
+            <div className="vehicle-card vehicle-card--dashboard-row vehicle-card--header">
+              <span className="vehicle-list-col vehicle-list-col--reg">
+                Registration
+              </span>
+              <span className="vehicle-list-col">Type</span>
+              <span className="vehicle-list-col">Slot</span>
+              <span className="vehicle-list-col">Entry</span>
+              <span className="vehicle-list-col">Duration</span>
+              <span className="vehicle-list-col">Est. fee</span>
+              <span className="vehicle-list-col vehicle-list-col--action">
+                Action
+              </span>
+            </div>
+          </li>
+          {visibleActiveSessions.map((session) => (
+            <li key={session.id}>
+              <article className="vehicle-card vehicle-card--dashboard-row">
+                <p className="vehicle-reg">{session.registrationNumber}</p>
+                <dl className="vehicle-meta vehicle-meta--dashboard-row">
+                  <div>
+                    <dt>Type</dt>
+                    <dd>{VEHICLE_TYPE_LABELS[session.vehicleType]}</dd>
+                  </div>
+                  <div>
+                    <dt>Slot</dt>
+                    <dd>
+                      {slotLabelById.get(session.slotId) ?? session.slotId}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Entry</dt>
+                    <dd>{formatTimestamp(session.entryTimestamp)}</dd>
+                  </div>
+                  <div>
+                    <dt>Duration</dt>
+                    <dd>
+                      <LiveParkingFeeEstimate
+                        entryTimestamp={session.entryTimestamp}
+                        vehicleType={session.vehicleType}
+                        pricing={pricingOptions}
+                        nowMs={liveNowMs}
+                        showFee={false}
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Est. fee</dt>
+                    <dd>
+                      <LiveParkingFeeEstimate
+                        entryTimestamp={session.entryTimestamp}
+                        vehicleType={session.vehicleType}
+                        pricing={pricingOptions}
+                        nowMs={liveNowMs}
+                        showDuration={false}
+                      />
+                    </dd>
+                  </div>
+                </dl>
+                <button
+                  type="button"
+                  className="checkout-btn checkout-btn--inline"
+                  onClick={() => requestCheckoutConfirm(session)}
+                >
+                  Check out
+                </button>
+              </article>
+            </li>
+          ))}
+        </ul>
+        </div>
+      )}
+    </>
+  )
+
+  const entryFormBlock = (
+    <>
+      {vehicleEntryForm}
+      <div className="activity-block" id="vehicle-entry-active-sessions">
         <h3 className="activity-subheading">Active parked vehicles</h3>
-        {activeSessions.length === 0 ? (
-          <div className="empty-state empty-state--compact" role="status">
-            <p className="empty-state-title">No vehicles parked</p>
-            <p className="empty-state-text">
-              Successful entries will appear here with slot and time.
-            </p>
-          </div>
-        ) : (
-          <ul className="vehicle-list">
-            {activeSessions.map((session) => (
-              <li key={session.id}>
-                <article className="vehicle-card">
-                  <p className="vehicle-reg">{session.registrationNumber}</p>
-                  <dl className="vehicle-meta">
-                    <div>
-                      <dt>Type</dt>
-                      <dd>{VEHICLE_TYPE_LABELS[session.vehicleType]}</dd>
-                    </div>
-                    <div>
-                      <dt>Slot</dt>
-                      <dd>
-                        {slotLabelById.get(session.slotId) ?? session.slotId}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Entry</dt>
-                      <dd>{formatTimestamp(session.entryTimestamp)}</dd>
-                    </div>
-                    <div>
-                      <dt>Duration</dt>
-                      <dd>
-                        <LiveParkingFeeEstimate
-                          entryTimestamp={session.entryTimestamp}
-                          vehicleType={session.vehicleType}
-                          pricing={pricingOptions}
-                          nowMs={liveNowMs}
-                          showFee={false}
-                        />
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Est. fee</dt>
-                      <dd>
-                        <LiveParkingFeeEstimate
-                          entryTimestamp={session.entryTimestamp}
-                          vehicleType={session.vehicleType}
-                          pricing={pricingOptions}
-                          nowMs={liveNowMs}
-                          showDuration={false}
-                        />
-                      </dd>
-                    </div>
-                  </dl>
-                  <button
-                    type="button"
-                    className="checkout-btn"
-                    onClick={() => requestCheckoutConfirm(session)}
-                  >
-                    Check out
-                  </button>
-                </article>
-              </li>
-            ))}
-          </ul>
-        )}
+        {activeSessionVehicleFilter ? (
+          <p className="view-filter-banner" role="status">
+            Filtered to {VEHICLE_TYPE_LABELS[activeSessionVehicleFilter]} sessions.{' '}
+            <button
+              type="button"
+              className="view-filter-banner__clear"
+              onClick={() => setActiveSessionVehicleFilter(null)}
+            >
+              Clear filter
+            </button>
+          </p>
+        ) : null}
+        {activeParkedVehiclesSection}
       </div>
     </>
   )
 
-  const recentActivityBlock = (
-    <div className="activity-block">
-      <h3 className="activity-subheading">Recent activity</h3>
-      {activityFeed.length === 0 ? (
+  const recentActivityBlock =
+    activityFeed.length === 0 ? (
         <div className="empty-state empty-state--compact" role="status">
           <p className="empty-state-title">No activity yet</p>
           <p className="empty-state-text">
@@ -964,13 +1059,138 @@ function App() {
             </li>
           ))}
         </ul>
-      )}
-    </div>
-  )
+      )
 
   function handleNavSelect(view: AppView) {
     setActiveView(view)
     setSidebarOpen(false)
+    if (view !== 'Parking Slots') {
+      setSelectedSlotId(null)
+    }
+  }
+
+  function navigateToParkingSlot(slotId: string) {
+    if (!slots.some((slot) => slot.id === slotId)) {
+      return
+    }
+    setSlotFilter('all')
+    setSlotBayTypeFilter('all')
+    setSelectedSlotId(slotId)
+    setActiveView('Parking Slots')
+    setSidebarOpen(false)
+  }
+
+  function handleEntryPhotoRecognition(result: VehiclePhotoRecognitionResult) {
+    setEntryRecognitionMessage(null)
+    setFormError(null)
+    if (!result.ok) {
+      setFormError(result.error)
+      return
+    }
+    setRegistrationInput(result.registrationNumber)
+    if (result.vehicleType) {
+      setVehicleTypeInput(result.vehicleType)
+    }
+    setEntryRecognitionMessage(
+      result.vehicleTypeFromImage && result.vehicleType
+        ? `Detected ${result.registrationNumber}. Confirm type and register entry.`
+        : `Detected plate ${result.registrationNumber}. Select vehicle type, verify, then register entry.`,
+    )
+  }
+
+  const handleDashboardNavigate = useCallback(
+    (action: DashboardNavigateAction) => {
+      setSidebarOpen(false)
+      if (action.view === 'Parking Slots') {
+        setSlotFilter(action.slotFilter ?? 'all')
+        setSlotBayTypeFilter(action.bayType ?? 'all')
+        setSelectedSlotId(null)
+        setActiveView('Parking Slots')
+        return
+      }
+      if (action.view === 'Analytics') {
+        setAnalyticsHighlightMetric(action.highlightMetric ?? null)
+        setActiveView('Analytics')
+        return
+      }
+      if (action.view === 'Vehicle Entry') {
+        setActiveSessionVehicleFilter(action.vehicleType ?? null)
+        setVehicleEntryFocusActive(action.focusActiveSessions ?? false)
+        setActiveView('Vehicle Entry')
+        return
+      }
+      setHistoryVehicleTypeFilter(action.vehicleType ?? null)
+      if (action.registrationSearch !== undefined) {
+        setHistorySearchInput(action.registrationSearch)
+        setAppliedHistoryFilters((prev) => ({
+          ...prev,
+          search: action.registrationSearch ?? '',
+        }))
+      }
+      setActiveView('Parking History')
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (activeView !== 'Analytics' || !analyticsHighlightMetric) {
+      return
+    }
+    const target = document.getElementById(
+      `analytics-metric-${analyticsHighlightMetric}`,
+    )
+    target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [activeView, analyticsHighlightMetric])
+
+  useEffect(() => {
+    if (activeView !== 'Vehicle Entry' || !vehicleEntryFocusActive) {
+      return
+    }
+    const target = document.getElementById('vehicle-entry-active-sessions')
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    setVehicleEntryFocusActive(false)
+  }, [activeView, vehicleEntryFocusActive])
+
+  function flushAccountParkingToStorage(accountId: string) {
+    saveAccountLotState(accountId, lotState)
+    saveAccountAppSettings(accountId, settings)
+  }
+
+  function openLogoutConfirm() {
+    setLogoutConfirmOpen(true)
+  }
+
+  function cancelLogoutConfirm() {
+    setLogoutConfirmOpen(false)
+  }
+
+  function confirmLogout() {
+    setLogoutConfirmOpen(false)
+    if (ownerSession?.accountId && loadedAccountId === ownerSession.accountId) {
+      flushAccountParkingToStorage(ownerSession.accountId)
+    }
+    logout()
+    setSidebarOpen(false)
+    setLoadedAccountId(null)
+  }
+
+  function reloadAccountParkingFromStorage() {
+    if (!ownerSession?.accountId) {
+      return
+    }
+    const facilityName = ownerFacility?.name ?? DEFAULT_APP_SETTINGS.lotName
+    setLotState(loadAccountLotState(ownerSession.accountId))
+    setSettings(loadAccountAppSettings(ownerSession.accountId, facilityName))
+    setLoadedAccountId(ownerSession.accountId)
+  }
+
+  if (!ownerSession) {
+    return (
+      <OperatorAuthPage
+        lotName={settings.lotName}
+        onAuthenticated={refreshSession}
+      />
+    )
   }
 
   return (
@@ -1047,36 +1267,71 @@ function App() {
             })}
           </ul>
         </nav>
+
+        <footer className="sidebar-footer">
+          <p className="sidebar-user" title={ownerUsername ?? undefined}>
+            Operator{' '}
+            <span className="sidebar-user-name">{ownerUsername ?? '…'}</span>
+          </p>
+          <button
+            type="button"
+            className="nav-item nav-item--logout"
+            onClick={openLogoutConfirm}
+          >
+            <svg
+              className="nav-icon"
+              width={20}
+              height={20}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <path d="M16 17l5-5-5-5" />
+              <path d="M21 12H9" />
+            </svg>
+            <span className="nav-label">Log out</span>
+          </button>
+        </footer>
       </aside>
 
       <main className="dashboard-main app-content">
         <header className="page-header">
           <div>
             <p className="page-eyebrow">{settings.lotName}</p>
-            <h2 className="page-title">{activeView}</h2>
+            <h2
+              className="page-title"
+              id={activeView === 'Analytics' ? 'analytics-heading' : undefined}
+            >
+              {activeView}
+            </h2>
+            {ownerFacility ? (
+              <FacilityLocationSummary facility={ownerFacility} compact />
+            ) : null}
           </div>
           <p className="page-subtitle">{VIEW_SUBTITLES[activeView]}</p>
         </header>
 
         {activeView === 'Dashboard' ? (
-          <>
-            {overviewSection}
-            {vehicleLocatorPanel}
-            <div className="content-grid">
-              {slotPanel}
-              <section
-                className="panel panel--activity"
-                aria-labelledby="activity-heading"
-              >
-                <h2 id="activity-heading">Vehicle entry</h2>
-                <p className="panel-description">
-                  Register a vehicle to occupy the next available slot.
-                </p>
-                {entryFormBlock}
-                {recentActivityBlock}
-              </section>
-            </div>
-          </>
+          <DashboardPage
+            slotCounts={slotCounts}
+            analyticsMetrics={analyticsMetrics}
+            occupancyAlerts={occupancyAlerts}
+            sessions={sessions}
+            activityEvents={activityFeed}
+            zoneSlotCounts={zoneSlotCounts}
+            formatInr={formatInr}
+            facility={ownerFacility}
+            onDashboardNavigate={handleDashboardNavigate}
+            slots={slots}
+            slotLabelById={slotLabelById}
+            onViewSlotOnMap={navigateToParkingSlot}
+            recentActivityBlock={recentActivityBlock}
+          />
         ) : null}
 
         {activeView === 'Parking Slots' ? (
@@ -1098,6 +1353,19 @@ function App() {
           </section>
         ) : null}
 
+        {activeView === 'Vehicle Exit' ? (
+          <VehicleExitPage
+            sessions={sessions}
+            slotLabelById={slotLabelById}
+            pricing={pricingOptions}
+            nowMs={liveNowMs}
+            formatTimestamp={formatTimestamp}
+            onRequestCheckout={requestCheckoutConfirm}
+            checkoutProcessing={checkoutProcessing}
+            onViewSlotOnMap={navigateToParkingSlot}
+          />
+        ) : null}
+
         {activeView === 'Parking History' ? (
           <section
             className="panel view-single"
@@ -1109,6 +1377,20 @@ function App() {
             <p className="panel-description">
               Search completed checkouts and currently parked vehicles.
             </p>
+
+            {historyVehicleTypeFilter ? (
+              <p className="view-filter-banner" role="status">
+                Showing {VEHICLE_TYPE_LABELS[historyVehicleTypeFilter]} records
+                only.{' '}
+                <button
+                  type="button"
+                  className="view-filter-banner__clear"
+                  onClick={() => setHistoryVehicleTypeFilter(null)}
+                >
+                  Clear filter
+                </button>
+              </p>
+            ) : null}
 
             <div className="history-filters">
               <div className="field">
@@ -1218,10 +1500,16 @@ function App() {
                       <th scope="col">Fee</th>
                       <th scope="col">Payment</th>
                       <th scope="col">Status</th>
+                      <th scope="col">Receipt</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredHistoryRows.map((row) => (
+                    {filteredHistoryRows.map((row) => {
+                      const completedTxn =
+                        row.status === 'completed'
+                          ? lotState.completed.find((txn) => txn.id === row.id)
+                          : undefined
+                      return (
                       <tr key={row.id}>
                         <td>{row.registrationNumber}</td>
                         <td>{row.slotLabel}</td>
@@ -1277,8 +1565,22 @@ function App() {
                               : 'Currently Parked'}
                           </span>
                         </td>
+                        <td>
+                          {completedTxn ? (
+                            <button
+                              type="button"
+                              className="history-receipt-btn"
+                              onClick={() => openHistoryReceipt(row.id)}
+                            >
+                              View Receipt
+                            </button>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1287,51 +1589,103 @@ function App() {
         ) : null}
 
         {activeView === 'Analytics' ? (
-          <section
-            className="summary-section view-single"
-            aria-labelledby="analytics-heading"
-          >
-            <div className="section-heading">
-              <h2 id="analytics-heading">Key metrics</h2>
-              <p className="demo-badge">Derived from current session state</p>
-            </div>
-            <ul className="stat-grid">
-              {analyticsCards.map((card) => (
-                <li key={card.id}>
-                  <article className={`stat-card stat-card--${card.id}`}>
-                    <p className="stat-label">{card.label}</p>
-                    <p
-                      className="stat-value"
-                      aria-describedby={`analytics-${card.id}-hint`}
-                    >
-                      {card.value}
-                    </p>
-                    <p className="stat-hint" id={`analytics-${card.id}-hint`}>
-                      {card.hint}
-                    </p>
-                  </article>
-                </li>
-              ))}
-            </ul>
-          </section>
+          <AnalyticsPage
+            analyticsMetrics={analyticsMetrics}
+            slotCounts={slotCounts}
+            zoneSlotCounts={zoneSlotCounts}
+            sessions={sessions}
+            completed={completed}
+            slots={slots}
+            formatInr={formatInr}
+            analyticsHighlightMetric={analyticsHighlightMetric}
+          />
         ) : null}
 
         {activeView === 'Settings' ? (
-          <SettingsPage
-            settings={settings}
-            onChange={updateSettings}
-            slotCapacity={slotCounts.total}
-            slotsAvailable={slotCounts.available}
-            slotsOccupied={slotCounts.occupied}
-            storageBytes={storageBytes}
-            appVersion={APP_VERSION}
-            environmentName={import.meta.env.MODE}
-            onExportHistory={handleHistoryExport}
-            onResetDemoData={handleResetDemoData}
-            exportMessage={historyExportMessage}
-          />
+          <>
+            {ownerFacility ? (
+              <FacilityLocationSummary facility={ownerFacility} />
+            ) : null}
+            {ownerAccountId && ownerFacility ? (
+              <LegacyParkingImportPanel
+                accountId={ownerAccountId}
+                facilityName={ownerFacility.name}
+                onImported={reloadAccountParkingFromStorage}
+              />
+            ) : null}
+            <SettingsPage
+              settings={settings}
+              onApply={applySettings}
+              slotCapacity={slotCounts.total}
+              slotsAvailable={slotCounts.available}
+              slotsOccupied={slotCounts.occupied}
+              storageBytes={storageBytes}
+              appVersion={APP_VERSION}
+              environmentName={import.meta.env.MODE}
+              onExportHistory={handleHistoryExport}
+              onResetDemoData={handleResetDemoData}
+              exportMessage={historyExportMessage}
+            />
+          </>
         ) : null}
       </main>
+
+      {historyReceiptView ? (
+        <PaymentReceiptDialog
+          transaction={historyReceiptView.transaction}
+          slotLabel={historyReceiptView.slotLabel}
+          facility={ownerFacility}
+          formatTimestamp={formatTimestamp}
+          legacyPaymentNotice={
+            !canViewPaymentReceipt(historyReceiptView.transaction)
+          }
+          onClose={() => setHistoryReceiptView(null)}
+        />
+      ) : null}
+
+      {logoutConfirmOpen ? (
+        <div
+          className="checkout-dialog-overlay"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              cancelLogoutConfirm()
+            }
+          }}
+        >
+          <div
+            className="checkout-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={logoutDialogTitleId}
+            aria-describedby={logoutDialogDescId}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id={logoutDialogTitleId} className="checkout-dialog-title">
+              Log out
+            </h3>
+            <p id={logoutDialogDescId} className="checkout-dialog-body">
+              Are you sure you want to log out?
+            </p>
+            <div className="checkout-dialog-actions">
+              <button
+                type="button"
+                className="checkout-dialog-cancel"
+                onClick={cancelLogoutConfirm}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="checkout-dialog-confirm entry-submit"
+                onClick={confirmLogout}
+              >
+                Log Out
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {checkoutConfirm ? (
         <CheckoutFlowDialog
@@ -1341,6 +1695,7 @@ function App() {
           quote={checkoutQuote}
           paymentError={checkoutPaymentError}
           receipt={checkoutReceipt}
+          facility={ownerFacility}
           isProcessing={checkoutProcessing}
           formatTimestamp={formatTimestamp}
           onCancel={cancelCheckoutConfirm}

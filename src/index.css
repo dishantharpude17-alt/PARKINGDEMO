@@ -52,6 +52,42 @@
     0 4px 10px -4px rgba(10, 22, 40, 0.08);
   --shadow-glow: 0 0 0 1px rgba(13, 148, 136, 0.15);
 
+  --chart-available: #34d399;
+  --chart-occupied: #fbbf24;
+  --chart-entry: var(--teal-600);
+  --chart-checkout: #6366f1;
+  --chart-motorcycle: #ef4444;
+  --chart-car: #64748b;
+  --chart-van: #3b82f6;
+  --chart-truck: #a16207;
+
+  --lot-surface: #c8ccd2;
+  --lot-surface-deep: #b4b9c0;
+  --lot-perimeter: #94a3b8;
+  --lot-line: rgba(255, 255, 255, 0.92);
+  --lot-line-muted: rgba(255, 255, 255, 0.55);
+  --lot-lane: #64748b;
+  --lot-lane-mark: rgba(255, 255, 255, 0.88);
+  --lot-drive-asphalt: #575c66;
+  --lot-drive-asphalt-deep: #454a54;
+  --lot-drive-edge: rgba(255, 255, 255, 0.22);
+  --lot-header-text: #334155;
+  --lot-gate-bg: rgba(255, 255, 255, 0.72);
+  --lot-zone-2w-accent: rgba(239, 68, 68, 0.14);
+  --lot-zone-2w-border: rgba(239, 68, 68, 0.45);
+  --lot-zone-4w-accent: rgba(59, 130, 246, 0.1);
+  --lot-bay-id: #0f172a;
+  --lot-bay-meta: #64748b;
+  --lot-bay-available-fill: rgba(52, 211, 153, 0.16);
+  --lot-bay-available-edge: rgba(16, 185, 129, 0.65);
+  --lot-bay-occupied-fill: rgba(249, 115, 22, 0.14);
+  --lot-bay-occupied-edge: rgba(234, 88, 12, 0.72);
+  --lot-bay-selected-ring: rgba(13, 148, 136, 0.55);
+  --lot-status-occupied: #ea580c;
+  --lot-reg-plate-bg: #ffffff;
+  --lot-reg-plate-text: #0f172a;
+  --lot-reg-plate-border: #64748b;
+
   --sans: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
   --heading: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
   --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
@@ -101,6 +137,42 @@
     0 16px 32px -10px rgba(0, 0, 0, 0.55),
     0 6px 14px -6px rgba(0, 0, 0, 0.4);
   --shadow-glow: 0 0 0 1px rgba(45, 212, 191, 0.2);
+
+  --chart-available: #34d399;
+  --chart-occupied: #fbbf24;
+  --chart-entry: var(--teal-400);
+  --chart-checkout: #818cf8;
+  --chart-motorcycle: #f87171;
+  --chart-car: #cbd5e1;
+  --chart-van: #60a5fa;
+  --chart-truck: #fbbf24;
+
+  --lot-surface: #3d4654;
+  --lot-surface-deep: #323a47;
+  --lot-perimeter: #475569;
+  --lot-line: rgba(248, 250, 252, 0.88);
+  --lot-line-muted: rgba(248, 250, 252, 0.38);
+  --lot-lane: #334155;
+  --lot-lane-mark: rgba(226, 232, 240, 0.82);
+  --lot-drive-asphalt: #2a303c;
+  --lot-drive-asphalt-deep: #1c212b;
+  --lot-drive-edge: rgba(255, 255, 255, 0.12);
+  --lot-header-text: #e2e8f0;
+  --lot-gate-bg: rgba(15, 23, 42, 0.75);
+  --lot-zone-2w-accent: rgba(248, 113, 113, 0.16);
+  --lot-zone-2w-border: rgba(248, 113, 113, 0.5);
+  --lot-zone-4w-accent: rgba(96, 165, 250, 0.12);
+  --lot-bay-id: #f8fafc;
+  --lot-bay-meta: #94a3b8;
+  --lot-bay-available-fill: rgba(52, 211, 153, 0.14);
+  --lot-bay-available-edge: rgba(52, 211, 153, 0.62);
+  --lot-bay-occupied-fill: rgba(251, 146, 60, 0.16);
+  --lot-bay-occupied-edge: rgba(249, 115, 22, 0.75);
+  --lot-bay-selected-ring: rgba(45, 212, 191, 0.55);
+  --lot-status-occupied: #fb923c;
+  --lot-reg-plate-bg: #f1f5f9;
+  --lot-reg-plate-text: #0f172a;
+  --lot-reg-plate-border: #94a3b8;
 
   color-scheme: dark;
 }

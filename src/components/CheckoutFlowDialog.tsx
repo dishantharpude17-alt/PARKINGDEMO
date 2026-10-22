@@ -4,7 +4,10 @@ import type {
   SimulatedPaymentConfirmation,
 } from '../logic/vehicleCheckout.ts'
 import { formatDuration, formatInr } from '../logic/parkingFees.ts'
+import { canViewPaymentReceipt } from '../logic/paymentReceipt.ts'
+import type { OwnerFacilityProfile } from '../types/ownerFacility.ts'
 import type { CompletedParkingTransaction } from '../types/vehicleSession.ts'
+import PaymentReceiptView from './PaymentReceiptView.tsx'
 
 export type CheckoutFlowStep = 'confirm' | 'payment' | 'receipt'
 
@@ -18,6 +21,7 @@ type CheckoutFlowDialogProps = {
     transaction: CompletedParkingTransaction
     slotLabel: string
   } | null
+  facility: OwnerFacilityProfile | null
   isProcessing: boolean
   formatTimestamp: (iso: string) => string
   onCancel: () => void
@@ -35,6 +39,7 @@ export default function CheckoutFlowDialog({
   quote,
   paymentError,
   receipt,
+  facility,
   isProcessing,
   formatTimestamp,
   onCancel,
@@ -120,12 +125,12 @@ export default function CheckoutFlowDialog({
 
   return (
     <div
-      className="checkout-dialog-overlay"
+      className={`checkout-dialog-overlay${step === 'receipt' ? ' payment-receipt-overlay' : ''}`}
       onClick={handleOverlayClick}
       role="presentation"
     >
       <div
-        className={`checkout-dialog${step === 'receipt' ? ' checkout-dialog--wide' : ''}`}
+        className={`checkout-dialog${step === 'receipt' ? ' checkout-dialog--wide payment-receipt-print-root' : ''}${step === 'receipt' ? ' payment-receipt-overlay-panel' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -353,105 +358,29 @@ export default function CheckoutFlowDialog({
             <h3 id={titleId} className="checkout-dialog-title">
               Payment receipt
             </h3>
-            <p id={descId} className="payment-demo-banner payment-demo-banner--success">
-              Simulated payment recorded — not a tax invoice.
+            <p id={descId} className="sr-only">
+              Payment receipt for {receipt.transaction.registrationNumber}
             </p>
-            <dl className="payment-receipt-list">
-              <div>
-                <dt>Receipt ID</dt>
-                <dd>{receipt.transaction.id}</dd>
-              </div>
-              <div>
-                <dt>Registration</dt>
-                <dd>{receipt.transaction.registrationNumber}</dd>
-              </div>
-              <div>
-                <dt>Slot</dt>
-                <dd>{receipt.slotLabel}</dd>
-              </div>
-              <div>
-                <dt>Entry</dt>
-                <dd>{formatTimestamp(receipt.transaction.entryTimestamp)}</dd>
-              </div>
-              <div>
-                <dt>Exit</dt>
-                <dd>{formatTimestamp(receipt.transaction.checkoutTimestamp)}</dd>
-              </div>
-              <div>
-                <dt>Duration</dt>
-                <dd>{formatDuration(receipt.transaction.durationMs)}</dd>
-              </div>
-              <div>
-                <dt>Billable hours</dt>
-                <dd>{receipt.transaction.billableHours}</dd>
-              </div>
-              {receipt.transaction.hourlyRateInr !== undefined ? (
-                <div>
-                  <dt>Hourly rate</dt>
-                  <dd>{formatInr(receipt.transaction.hourlyRateInr)}/hr</dd>
-                </div>
-              ) : null}
-              {receipt.transaction.standardFeeInr !== undefined ? (
-                <div>
-                  <dt>Standard total</dt>
-                  <dd>{formatInr(receipt.transaction.standardFeeInr)}</dd>
-                </div>
-              ) : null}
-              {receipt.transaction.discountInr !== undefined &&
-              receipt.transaction.discountInr > 0 ? (
-                <div>
-                  <dt>Discount</dt>
-                  <dd>
-                    −{formatInr(receipt.transaction.discountInr)}
-                    {receipt.transaction.discountDescription
-                      ? ` · ${receipt.transaction.discountDescription}`
-                      : ''}
-                  </dd>
-                </div>
-              ) : null}
-              <div>
-                <dt>Amount paid</dt>
-                <dd>{formatInr(receipt.transaction.feeInr)}</dd>
-              </div>
-              <div>
-                <dt>Payment method</dt>
-                <dd>
-                  {receipt.transaction.paymentMethod === 'upi'
-                    ? 'UPI (simulated)'
-                    : receipt.transaction.paymentMethod === 'cash'
-                      ? 'Cash'
-                      : '—'}
-                </dd>
-              </div>
-              <div>
-                <dt>Payment status</dt>
-                <dd>{receipt.transaction.paymentStatus ?? '—'}</dd>
-              </div>
-              {receipt.transaction.paymentMethod === 'cash' ? (
-                <>
-                  <div>
-                    <dt>Cash received</dt>
-                    <dd>
-                      {receipt.transaction.cashReceivedInr !== undefined
-                        ? formatInr(receipt.transaction.cashReceivedInr)
-                        : '—'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Change due</dt>
-                    <dd>
-                      {receipt.transaction.changeDueInr !== undefined
-                        ? formatInr(receipt.transaction.changeDueInr)
-                        : '—'}
-                    </dd>
-                  </div>
-                </>
-              ) : null}
-            </dl>
-            <div className="checkout-dialog-actions">
+            <PaymentReceiptView
+              transaction={receipt.transaction}
+              slotLabel={receipt.slotLabel}
+              facility={facility}
+              formatTimestamp={formatTimestamp}
+              legacyPaymentNotice={
+                !canViewPaymentReceipt(receipt.transaction)
+              }
+            />
+            <div className="checkout-dialog-actions payment-receipt-dialog-actions">
               <button
                 type="button"
-                className="checkout-dialog-confirm entry-submit"
+                className="checkout-dialog-cancel payment-receipt-no-print"
+                onClick={() => window.print()}
+              >
+                Print / Save PDF
+              </button>
+              <button
+                type="button"
+                className="checkout-dialog-confirm entry-submit payment-receipt-no-print"
                 onClick={onCloseReceipt}
               >
                 Done

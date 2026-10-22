@@ -31,7 +31,7 @@ export function estimateActiveParkingFee(
   const breakdown = calculateParkingFeeBreakdown(
     durationMs,
     vehicleType,
-    pricing.minBillableHours,
+    pricing,
   )
 
   return { ok: true, durationMs, feeInr: breakdown.feeInr }

@@ -1,11 +1,16 @@
+import { applySlotStatusesFromSessions } from './slotAllocation.ts'
 import type { ParkingLotState } from './vehicleEntry.ts'
 import {
   calculateParkingDurationMs,
   calculateParkingFeeBreakdown,
   type ParkingFeeBreakdown,
 } from './parkingFees.ts'
-import { HOURLY_PARKING_RATE_INR } from '../config/parkingRates.ts'
-import type { PricingOptions } from '../types/appSettings.ts'
+import {
+  DEFAULT_APP_SETTINGS,
+  type PricingOptions,
+  pricingOptionsFromSettings,
+} from '../types/appSettings.ts'
+import { createReceiptNumber } from './paymentReceipt.ts'
 import type {
   CompletedParkingTransaction,
   PaymentMethod,
@@ -87,7 +92,7 @@ function resolveSessionBilling(
   const breakdown = calculateParkingFeeBreakdown(
     durationMs,
     session.vehicleType,
-    pricing.minBillableHours,
+    pricing,
   )
 
   return {
@@ -102,10 +107,7 @@ export function getVehicleCheckoutQuote(
   state: ParkingLotState,
   sessionId: string,
   checkoutAt: Date = new Date(),
-  pricing: PricingOptions = {
-    hourlyRateInr: HOURLY_PARKING_RATE_INR,
-    minBillableHours: 1,
-  },
+  pricing: PricingOptions = pricingOptionsFromSettings(DEFAULT_APP_SETTINGS),
 ): { ok: true; quote: CheckoutQuote } | VehicleCheckoutFailure {
   const billing = resolveSessionBilling(state, sessionId, checkoutAt, pricing)
   if (!billing.ok) {
@@ -121,10 +123,7 @@ export function attemptVehicleCheckout(
   state: ParkingLotState,
   sessionId: string,
   checkoutAt: Date = new Date(),
-  pricing: PricingOptions = {
-    hourlyRateInr: HOURLY_PARKING_RATE_INR,
-    minBillableHours: 1,
-  },
+  pricing: PricingOptions = pricingOptionsFromSettings(DEFAULT_APP_SETTINGS),
   payment: SimulatedPaymentConfirmation,
 ): VehicleCheckoutResult {
   const billing = resolveSessionBilling(state, sessionId, checkoutAt, pricing)
@@ -165,6 +164,7 @@ export function attemptVehicleCheckout(
     paymentMethod = 'upi'
   }
 
+  const paymentTimestamp = checkoutAt.toISOString()
   const transaction: CompletedParkingTransaction = {
     id: `txn-${session.id}`,
     sessionId: session.id,
@@ -182,24 +182,22 @@ export function attemptVehicleCheckout(
     ...(discountDescription ? { discountDescription } : {}),
     paymentMethod,
     paymentStatus,
+    receiptNumber: createReceiptNumber(session.id, checkoutAt),
+    paymentTimestamp,
     ...(cashReceivedInr !== undefined ? { cashReceivedInr } : {}),
     ...(changeDueInr !== undefined ? { changeDueInr } : {}),
   }
 
   const slot = state.slots.find((item) => item.id === session.slotId)
-  const slots = state.slots.map((item) =>
-    item.id === session.slotId
-      ? { ...item, status: 'available' as const }
-      : item,
-  )
+  const nextState = applySlotStatusesFromSessions({
+    slots: state.slots,
+    sessions: state.sessions.filter((item) => item.id !== sessionId),
+    completed: [...state.completed, transaction],
+  })
 
   return {
     ok: true,
-    state: {
-      slots,
-      sessions: state.sessions.filter((item) => item.id !== sessionId),
-      completed: [...state.completed, transaction],
-    },
+    state: nextState,
     transaction,
     slotLabel: slot?.label ?? session.slotId,
     durationMs,
